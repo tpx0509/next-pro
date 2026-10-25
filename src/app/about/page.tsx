@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { connection } from "next/server";
+import { io } from "next/cache";
 
 export const metadata = {
   title: "关于",
@@ -15,9 +15,9 @@ async function BuildTime() {
   );
 }
 
-// B. 请求时刻：connection() 声明必须等到请求到达才渲染
+// B. 请求时刻：io() 在预渲染时挂起，这段代码被排除出静态壳
 async function RequestTime() {
-  await connection();
+  await io();
   return (
     <p className="mt-1 font-mono text-base text-orange-700 dark:text-orange-400">
       {new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
@@ -47,7 +47,7 @@ export default function AboutPage() {
 
         <div className="rounded-lg border border-orange-200 p-4 text-sm dark:border-orange-900">
           <p className="font-medium text-orange-700 dark:text-orange-400">
-            B · 请求时刻（connection）
+            B · 请求时刻（io）
           </p>
           <Suspense
             fallback={

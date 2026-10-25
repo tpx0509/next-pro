@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local runtime data (likes), changes on every click — replaced by DB on day 3
+/data/likes.json

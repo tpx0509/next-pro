@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "Next 速成",
-    template: "%s | Next 速成",
+    default: "Next",
+    template: "%s | Next",
   },
   description: "三天掌握 App Router",
 };
