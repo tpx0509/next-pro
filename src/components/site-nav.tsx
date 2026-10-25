@@ -9,7 +9,7 @@ const items = [
   { href: "/blog", label: "博客" },
 ];
 
-export function SiteNav() {
+export function SiteNav({ children }: { children?: React.ReactNode }) {
   const pathname = usePathname();
 
   return (
@@ -36,6 +36,9 @@ export function SiteNav() {
           </Link>
         );
       })}
+      {/* 服务端组件通过 children 从 layout 传进来。
+          客户端组件不能直接 import 服务端组件，但可以把已经渲染好的元素当 children 接收。 */}
+      {children}
     </nav>
   );
 }

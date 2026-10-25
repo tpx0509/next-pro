@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Suspense } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import { SiteNav } from "@/components/site-nav";
+import { UserMenu } from "@/components/user-menu";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -39,7 +41,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                 next-learn
               </span>
             </Link>
-            <SiteNav />
+            <SiteNav>
+              {/* UserMenu 里 await cookies()，必须包 Suspense。
+                  否则这个 layout 会变成阻塞预渲染，整站退化。 */}
+              <Suspense fallback={null}>
+                <UserMenu />
+              </Suspense>
+            </SiteNav>
           </div>
         </header>
 
