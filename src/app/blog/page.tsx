@@ -1,4 +1,5 @@
 import { Suspense, cache } from 'react';
+import { connection } from 'next/server';
 import { posts } from './posts';
 import Link from "next/link";
 import { getAllLikes } from '@/lib/likes';
@@ -12,9 +13,12 @@ export const metadata = {
 // cache() 是「请求级去重」，和 "use cache"（跨请求缓存）完全是两件事
 const getAllLikesOnce = cache(getAllLikes);
 
-// 没有 "use cache" → 每次请求都真的去读文件
-// await 本身就是挂起点，Suspense 边界接住它，于是这里成了一个「动态洞」
+// 没有 "use cache" → 每次请求都真的去查数据库
+// connection() 是第一道闸：它告诉 Next「这个洞必须等到请求」，
+// 于是 build 的静态预渲染走到这里就停住、交给 Suspense 的 fallback，
+// 根本不会去打开 SQLite（否则构建 worker 会持有库文件句柄，60 秒后被判超时）。
 async function LikeCount({ slug }: { slug: string }) {
+  await connection();
   const counts = await getAllLikesOnce();
   return <>{counts[slug] ?? 0}</>;
 }

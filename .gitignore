@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# 例外：模板文件必须提交，否则别人 clone 下来不知道要配什么
+!.env.example
 
 # vercel
 .vercel
@@ -42,3 +44,14 @@ next-env.d.ts
 
 # local runtime data (likes), changes on every click — replaced by DB on day 3
 /data/likes.json
+
+/src/generated/prisma
+
+# 本地 SQLite 库文件（每台机器自己 migrate 出来，不进版本库）
+/prisma/dev.db
+/prisma/dev.db-journal
+
+# prisma init 自动下载的 AI agent 技能包，和本项目代码无关
+/.agents/
+/.claude/
+/skills-lock.json

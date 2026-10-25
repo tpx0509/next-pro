@@ -1,0 +1,23 @@
+// Prisma schema —— Day 3 用它替换 data/likes.json
+// 文档：https://pris.ly/d/prisma-schema
+
+// v7 的默认 generator 叫 prisma-client（老的 prisma-client-js 已废弃）。
+// 它生成的是纯 TypeScript 源码，必须显式指定 output，不再往 node_modules 里塞东西。
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// v7 的 datasource 里【不写 url】了，连接串挪到 prisma7.config.ts 的 datasource.url。
+datasource db {
+  provider = "sqlite"
+}
+
+/// 每篇文章一行，count 是累计点赞数。
+/// slug 直接当主键：数据天然按 slug 唯一，不需要再挂一个自增 id 或 cuid。
+/// 同一个 slug 第二次点赞走 upsert 的 update 分支，不会出现重复行。
+model Like {
+  slug      String   @id
+  count     Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
