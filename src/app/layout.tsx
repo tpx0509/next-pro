@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
+import { SiteNav } from "@/components/site-nav";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -21,35 +22,37 @@ export const metadata: Metadata = {
   description: "三天掌握 App Router",
 };
 
-const nav = [
-  { href: "/", label: "首页" },
-  { href: "/about", label: "关于" },
-  { href: "/blog", label: "博客" },
-];
-
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="zh-CN"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
-        <header className="border-b border-zinc-200 dark:border-zinc-800">
-          <nav className="max-w-3xl mx-auto flex gap-6 px-6 py-4 text-sm">
-            {nav.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-              >
-                {item.label}
-              </Link>
-            ))}
-          </nav>
+      <body className="flex min-h-full flex-col bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+        <header className="sticky top-0 z-50 border-b border-zinc-200/70 bg-white/80 backdrop-blur-md dark:border-zinc-800/70 dark:bg-zinc-950/80">
+          <div className="mx-auto flex h-14 w-full max-w-3xl items-center justify-between px-6">
+            <Link href="/" className="flex items-center gap-2.5">
+              <span className="flex size-6 items-center justify-center rounded-md bg-zinc-900 font-mono text-[11px] font-bold text-white dark:bg-zinc-100 dark:text-zinc-900">
+                N
+              </span>
+              <span className="font-mono text-sm font-medium tracking-tight text-zinc-700 dark:text-zinc-300">
+                next-learn
+              </span>
+            </Link>
+            <SiteNav />
+          </div>
         </header>
-        <main className="flex-1 max-w-3xl w-full mx-auto px-6 py-10">
+
+        <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-12">
           {children}
         </main>
+
+        <footer className="border-t border-zinc-200 dark:border-zinc-800">
+          <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-6 py-6 text-xs text-zinc-400 dark:text-zinc-500">
+            <span>Next.js 16 · App Router · Cache Components</span>
+            <span className="font-mono">day 2 / 3</span>
+          </div>
+        </footer>
       </body>
     </html>
   );

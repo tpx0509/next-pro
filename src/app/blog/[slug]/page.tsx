@@ -1,4 +1,5 @@
 import { Suspense } from 'react'
+import Link from 'next/link'
 import { posts, getPost } from '../posts';
 import { LikeBox } from './like-box';
 
@@ -17,15 +18,36 @@ export default async function Page({ params }: PageProps<"/blog/[slug]">) {
   if(!post) notFound()
 
   return (
-    <div>
-      <div>
-        { post.title }
-        <Suspense fallback={<span>…</span>}>
+    <article className="space-y-8">
+      <header className="space-y-5">
+        <div className="flex items-center justify-between">
+          <Link
+            href="/blog"
+            className="inline-flex items-center gap-1.5 font-mono text-xs text-zinc-400 transition-colors hover:text-zinc-700 dark:hover:text-zinc-200"
+          >
+            ← 返回列表
+          </Link>
+          <span className="font-mono text-xs text-zinc-300 dark:text-zinc-600">
+            /blog/{slug}
+          </span>
+        </div>
+
+        <h1 className="text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">
+          {post.title}
+        </h1>
+
+        <Suspense
+          fallback={<span className="text-sm text-zinc-400">读取点赞中…</span>}
+        >
           <LikeBox slug={slug} />
         </Suspense>
-      </div>
-      <div>{ post.body }</div>
-    </div>
+      </header>
 
+      <div className="border-t border-zinc-200 pt-8 dark:border-zinc-800">
+        <p className="text-[17px] leading-8 text-zinc-700 dark:text-zinc-300">
+          {post.body}
+        </p>
+      </div>
+    </article>
   )
 }
