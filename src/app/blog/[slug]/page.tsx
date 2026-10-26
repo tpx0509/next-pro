@@ -1,13 +1,26 @@
 import { Suspense } from 'react'
 import Link from 'next/link'
-import { posts, getPost } from '../posts';
-import { LikeBox } from './like-box';
+import { connection } from 'next/server'
+import { getPost, getAllPostSlugs } from '@/lib/posts'
+import { LikeBox } from './like-box'
 
 import { notFound } from "next/navigation"
 
-// ① 配置导出：告诉 Next 这个变量能取哪些值
-export function generateStaticParams() {
-  return posts
+// ① 配置导出：列出这个路由要预渲染哪些 slug。
+//    原来是 `return posts`（硬编码数组，同步）。数据进库后它变成 async，
+//    必须真的查一次库 —— 这是全文唯一在 build 阶段碰 SQLite 的地方。
+//
+//    曾经想过干脆删掉它，结果 build 立刻报错：
+//      Route "/blog/[slug]": Next.js encountered URL data `usePathname()`
+//      in a Client Component outside of `<Suspense>`
+//      at src/components/site-nav.tsx:12
+//    原因：pathname 和 params 一样是「URL data」。没有 slug 清单时，
+//    预渲染器不知道这个路由对应哪个具体地址，根布局里的 usePathname()
+//    就永远拿不到值 —— 于是连壳都生成不出来。
+//    反过来说：这个函数存在的意义，是让「壳」知道要为什么地址生成。
+export async function generateStaticParams() {
+  const slugs = await getAllPostSlugs()
+  return slugs.map((slug) => ({ slug }))
 }
 
 // ⚠️ 这里本来想写 export const dynamicParams = false，让未知 slug 在路由层就 404。
@@ -43,13 +56,18 @@ export default function Page({ params }: PageProps<"/blog/[slug]">) {
 }
 
 
-// ③ 真正读 URL data 的地方：在 Suspense 内，等待它不影响壳先到达
+// ③ 真正读 URL data + 查数据库的地方
 //    只收 params —— PageProps 里 searchParams 也是必填，传下去没意义
 type PostDetailProps = Pick<PageProps<"/blog/[slug]">, "params">
 
 async function PostDetail({ params }: PostDetailProps) {
+  // 闸要放在最前面：一旦下面开始查库，build 阶段的预渲染就真的会打开 SQLite。
+  // 注意 await params 虽然也是挂起点，但它拦不住「build 时按参数逐个预渲染」。
+  await connection()
+
   const { slug } = await params
-  const post = getPost(slug)
+  const post = await getPost(slug)
+  // 查库查不到 → null，比原来 posts.find() 返回 undefined 更明确
   if (!post) notFound()
 
   return (

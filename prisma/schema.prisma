@@ -13,6 +13,23 @@ datasource db {
   provider = "sqlite"
 }
 
+/// 博客文章。原先硬编码在 src/app/blog/posts.ts 里的三篇，现在搬到这里。
+/// slug 当主键：文章的 URL 就是 /blog/<slug>，天然唯一、且永远按它查。
+/// 注意 body 目前是纯文本一段话；将来写长文可以换成 Markdown 原文。
+model Post {
+  slug  String @id
+  title String
+  body  String
+
+  /// 手工排序位，越小越靠前。
+  /// 不能用 createdAt 代替：批量导入时几篇的创建时间是同一毫秒，
+  /// 数据库无法给出稳定顺序（实测：三篇 createdAt 完全相同 → 退化成主键字母序）。
+  position Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 /// 每篇文章一行，count 是累计点赞数。
 /// slug 直接当主键：数据天然按 slug 唯一，不需要再挂一个自增 id 或 cuid。
 /// 同一个 slug 第二次点赞走 upsert 的 update 分支，不会出现重复行。
