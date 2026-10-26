@@ -2,6 +2,12 @@
   "name": "next-learn",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "overrides": {
+    "better-sqlite3": "$better-sqlite3"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
