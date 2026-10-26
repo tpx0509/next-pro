@@ -22,3 +22,66 @@ model Like {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+// 下面四张表是毕业项目（AI 知识库问答）的骨架，目前只建结构、还没有页面在用。
+// 关系形状：User 1—N Document、User 1—N Conversation、Conversation 1—N Message。
+// 外键列不会自动建索引，所以每张表的「高频查询列」都显式挂了 @@index。
+
+/// 用户。
+model User {
+  id    Int    @id @default(autoincrement())
+  email String @unique
+  name  String?
+  // 反向字段：库里不存在这一列，只是让 user.documents 这种写法有类型。
+  documents     Document[]
+  conversations Conversation[]
+  createdAt     DateTime     @default(now())
+}
+
+/// 知识库文档。content 先整段存，做 RAG 时再拆出 chunk 表。
+model Document {
+  id      Int    @id @default(autoincrement())
+  title   String
+  content String
+
+  ownerId Int
+  owner   User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId])
+}
+
+/// 一次问答会话。
+/// 用自增 id 而不是 slug：会话没有天然唯一字段，标题用户还能随便改。
+model Conversation {
+  id    Int     @id @default(autoincrement())
+  title String?
+
+  ownerId Int
+  owner   User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  messages Message[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId])
+}
+
+/// 会话里的一条消息。
+/// role 用 String 不用 enum：SQLite 的 enum 落地只是 TEXT，数据库层不校验，
+/// 约束交给 TypeScript 的联合类型（'user' | 'assistant'）更诚实。
+model Message {
+  id      Int    @id @default(autoincrement())
+  role    String
+  content String
+
+  conversationId Int
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([conversationId])
+}
