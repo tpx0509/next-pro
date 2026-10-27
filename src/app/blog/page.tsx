@@ -2,8 +2,8 @@ import { Suspense } from 'react';
 import { connection } from 'next/server';
 import Link from 'next/link';
 import { getPosts } from '@/lib/posts';
-import { getAllLikes } from '@/lib/likes';
 import { HeartIcon } from '@/components/heart-icon';
+import { NewPostDialog } from './new-post-dialog';
 
 export const metadata = {
   title: '博客1',
@@ -16,11 +16,18 @@ export const metadata = {
 export default function BlogPage() {
   return (
     <div className="space-y-6">
-      <header className="space-y-1.5">
-        <h1 className="text-2xl font-semibold tracking-tight">全部文章</h1>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          文章与点赞数都来自数据库，每次请求重新读
-        </p>
+      <header className="flex items-start justify-between gap-4">
+        <div className="space-y-1.5">
+          <h1 className="text-2xl font-semibold tracking-tight">全部文章</h1>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+            文章与点赞数都来自数据库，每次请求重新读
+          </p>
+        </div>
+
+        {/* 按钮 + 弹框都是客户端组件（要响应点击），但弹框里的表单提交后
+            仍然由服务端的 action 落库。这个小组件不读 URL data，
+            所以照样能进静态壳，跟标题一起在构建期生成好。 */}
+        <NewPostDialog />
       </header>
 
       <Suspense fallback={<PostListSkeleton />}>
@@ -36,8 +43,7 @@ export default function BlogPage() {
 async function PostList() {
   await connection();
 
-  // 两次查询互相独立，并行发出，总耗时取决于慢的那个
-  const [posts, counts] = await Promise.all([getPosts(), getAllLikes()]);
+  const posts= await getPosts()
 
   if (posts.length === 0) {
     return (
@@ -65,7 +71,7 @@ async function PostList() {
 
           <span className="mt-0.5 inline-flex shrink-0 items-center gap-1.5 rounded-full border border-zinc-200 px-2.5 py-1 text-xs font-medium tabular-nums text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
             <HeartIcon className="size-3.5" />
-            {counts[post.slug] ?? 0}
+            {post.likeCount}
           </span>
         </li>
       ))}
