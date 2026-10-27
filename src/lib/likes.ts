@@ -16,10 +16,21 @@ export async function getLikeCount(slug: string): Promise<number> {
 
 
 export async function incrementLike(slug: string): Promise<number> {
-  const row = await prisma.post.update({
-    where: { slug },
-    data: { likeCount: { increment: 1 } },
-    select: { likeCount: true },
-  });
-  return row.likeCount;
+  // 这里故意不用 prisma.post.update，原因只有一个：
+  // Post.updatedAt 挂的是 @updatedAt，Prisma 会在每次 update 时把它刷成当前时间。
+  // 而列表页现在按 updatedAt desc 排 —— 点赞就会把文章顶到最前面。
+  // 点赞不是「编辑」，不该动最后修改时间，所以绕开 Prisma 的参数注入，
+  // 用原生 SQL 只改 likeCount；RETURNING 让它在同一条语句里把新值带回来，
+  // 不用再发第二条 SELECT（并发下也不会读到别人刚改过的值）。
+  const rows = await prisma.$queryRaw<{ likeCount: number }[]>`
+    UPDATE "Post"
+       SET "likeCount" = "likeCount" + 1
+     WHERE "slug" = ${slug}
+    RETURNING "likeCount"
+  `;
+
+  // 原来 update 未命中会抛 P2025；原生 SQL 只会安静地返回空数组，得自己判。
+  if (rows.length === 0) throw new Error('文章不存在，无法点赞');
+
+  return rows[0].likeCount;
 }

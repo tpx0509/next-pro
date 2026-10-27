@@ -12,10 +12,12 @@ export type Post = Prisma.PostGetPayload<{
 // 三个页面都按这个字段清单取，保持一致
 const postSelect = { slug: true, title: true, body: true, likeCount: true } as const;
 
-/// 列表页用。按 position 排，不按 createdAt —— 因为批量导入的时间戳会重复。
+/// 列表页用。先按更新时间倒序（最近改过的在前），时间相同的再按 position 升序。
+/// position 现在退居 tiebreaker：批量导入/迁移出来的几行 updatedAt 可能完全一致，
+/// 那时必须有第二个字段兜底，否则顺序由数据库自己决定（第 3 块踩过这个坑）。
 export async function getPosts(): Promise<Post[]> {
   return prisma.post.findMany({
-    orderBy: { position: 'asc' },
+    orderBy: [{ updatedAt: 'desc' }, { position: 'asc' }],
     select: postSelect,
   });
 }
@@ -69,9 +71,11 @@ export async function createPost(input: CreatePostInput): Promise<Post> {
 
   const slug = await uniqueSlug(title);
 
-  // 排序位取「当前最小值 - 1」，让新文章排在列表最前面。
-  // 不能用 @default(0)：那会和已有的第一篇并列，position 相同时
-  // 顺序由数据库自己决定 —— 和第 3 块那个「批量导入时间相同导致顺序漂移」是同一个坑。
+  // 排序位取「当前最小值 - 1」。
+  // 列表现在以 updatedAt desc 为主序，新文章的 updatedAt 天然最新、本来就排第一，
+  // position 只在 updatedAt 撞车的极端情况下（同一毫秒连发两篇）才起决定作用。
+  // 即便如此也不能用 @default(0)：那会和已有的第一篇并列，谁先谁后
+  // 就交给数据库自己决定了 —— 和第 3 块那个「顺序漂移」是同一个坑。
   const first = await prisma.post.findFirst({
     orderBy: { position: 'asc' },
     select: { position: true },
