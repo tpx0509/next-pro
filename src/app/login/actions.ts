@@ -1,41 +1,49 @@
 'use server'
 
-import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
-import { SESSION_COOKIE, SESSION_VALUE } from '@/lib/auth'
+import { prisma } from '@/lib/prisma'
+import { verifyPassword } from '@/lib/password'
+import { createSession, destroySession } from '@/lib/auth'
 
-// 演示密码。真实项目：查库校验密码哈希，再签发 session。
-const DEMO_PASSWORD = 'demo1234'
-
-// 防开放重定向：只接受站内路径
+// 防开放重定向：只接受站内路径。
+// 少了这个判断，别人可以做 /login?from=https://evil.com 的钓鱼链接，
+// 用户输完密码就被带到外站。
 function safeFrom(raw: unknown): string {
   const value = typeof raw === 'string' ? raw : ''
   return value.startsWith('/') && !value.startsWith('//') ? value : '/blog'
 }
 
+// 用户不存在时也要跑一次 bcrypt 比对，否则「查无此人」会立刻返回、
+// 「密码错」要卡 80ms，攻击者靠响应时间就能枚举出哪些邮箱注册过。
+// 这个哈希是固定值，只用来消耗同样的 CPU 时间。
+const DUMMY_HASH = '$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy'
+
 export async function login(formData: FormData) {
+  const email = String(formData.get('email') ?? '').trim().toLowerCase()
   const password = String(formData.get('password') ?? '')
   const from = safeFrom(formData.get('from'))
 
-  if (password !== DEMO_PASSWORD) {
+  if (!email || !password) {
+    redirect(`/login?error=empty&from=${encodeURIComponent(from)}`)
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true, passwordHash: true },
+  })
+
+  const ok = await verifyPassword(password, user?.passwordHash ?? DUMMY_HASH)
+
+  // 故意不区分「邮箱没注册」和「密码不对」：分开提示等于免费送一个账号探测器。
+  if (!user || !ok) {
     redirect(`/login?error=1&from=${encodeURIComponent(from)}`)
   }
 
-  // .set() 只能在 Server Action / Route Handler 里调用
-  // （Server Component 渲染期间是只读的，文档明确写了不支持）
-  const store = await cookies()
-  store.set(SESSION_COOKIE, SESSION_VALUE, {
-    httpOnly: true, // 禁止 JS 读取，防 XSS 偷 session
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 60 * 60 * 24 * 7,
-  })
-
+  await createSession(user.id)
   redirect(from)
 }
 
 export async function logout() {
-  const store = await cookies()
-  store.delete(SESSION_COOKIE)
+  await destroySession()
   redirect('/login')
 }

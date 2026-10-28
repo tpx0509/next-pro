@@ -2,6 +2,11 @@ import Link from "next/link";
 
 const entries = [
   {
+    href: "/documents",
+    title: "知识库",
+    desc: "Route Handler 收 multipart 文件、PDF / Word 抽文本、Session 鉴权",
+  },
+  {
     href: "/blog",
     title: "博客",
     desc: "动态路由、generateStaticParams、点赞数作为 PPR 动态洞",
@@ -20,6 +25,8 @@ const done = [
   "'use cache' + cacheTag 缓存与失效",
   "PPR：静态壳 + Suspense 动态洞",
   "io() 区分构建时刻与请求时刻",
+  "真实认证：bcrypt 哈希 + Session 表",
+  "Route Handler + multipart 文件上传",
 ];
 
 export default function Home() {

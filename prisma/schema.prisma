@@ -39,10 +39,34 @@ model User {
   id    Int    @id @default(autoincrement())
   email String @unique
   name  String?
+
+  /// 密码哈希（bcrypt，自带 salt）。库里绝不放明文，也不放可逆加密。
+  /// bcrypt 的串长固定 60 字符，但留 String 默认长度即可。
+  passwordHash String
+
   // 反向字段：库里不存在这一列，只是让 user.documents 这种写法有类型。
   documents     Document[]
   conversations Conversation[]
+  sessions      Session[]
   createdAt     DateTime     @default(now())
+}
+
+/// 登录会话。
+/// 为什么不用固定 cookie 值（原来那个 session=ok）：那种写法任何人手写一个同名
+/// cookie 就登录了。session token 是 32 字节随机数，猜不出来；删掉这行就等于
+/// 立刻吊销（这是 DB session 比无状态 JWT 好的地方：JWT 发出去就撤不回）。
+model Session {
+  /// token 本身就是凭证，直接当主键：查它 = 查主键，天然带索引。
+  token  String @id
+  userId Int
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// 过期时间由应用层判断。惰性清理：读的时候校验，顺手删过期的。
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  /// 外键不自动建索引，而「列出某人的所有会话 / 退出全部设备」要按 userId 查。
+  @@index([userId])
 }
 
 /// 知识库文档。content 先整段存，做 RAG 时再拆出 chunk 表。

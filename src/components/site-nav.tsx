@@ -7,6 +7,7 @@ const items = [
   { href: "/", label: "首页" },
   { href: "/about", label: "关于" },
   { href: "/blog", label: "博客" },
+  { href: "/documents", label: "知识库" },
 ];
 
 export function SiteNav({ children }: { children?: React.ReactNode }) {
