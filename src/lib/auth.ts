@@ -74,9 +74,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
       user: { select: { id: true, email: true, name: true } },
     },
   })
-  console.log('session',session)
   if (!session) return null
-
   // 过期就顺手删掉（惰性清理）。HTTP 里没有定时任务，
   // 每次读的时候顺手收拾是最省事、也最不会忘的做法。
   if (session.expiresAt.getTime() <= Date.now()) {

@@ -2,6 +2,11 @@ import Link from "next/link";
 
 const entries = [
   {
+    href: "/chat",
+    title: "问答",
+    desc: "Route Handler + ReadableStream 做 SSE，fetch 读流逐 token 渲染",
+  },
+  {
     href: "/documents",
     title: "知识库",
     desc: "Route Handler 收 multipart 文件、PDF / Word 抽文本、Session 鉴权",
@@ -27,6 +32,8 @@ const done = [
   "io() 区分构建时刻与请求时刻",
   "真实认证：bcrypt 哈希 + Session 表",
   "Route Handler + multipart 文件上传",
+  "SSE 流式问答：ReadableStream + 手写分帧",
+  "会话落库：Conversation / Message",
 ];
 
 export default function Home() {

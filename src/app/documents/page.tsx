@@ -63,7 +63,7 @@ async function DocList({
 
   const added = typeof sp.added === "string" ? sp.added : undefined;
   const error = typeof sp.error === "string" ? sp.error : undefined;
-  console.log('docs',docs)
+
   return (
     <div className="space-y-4">
       {/* 上传结果走 URL 参数传回来（Route Handler 用 303 跳转，没法直接返回 JSON 给表单）。
