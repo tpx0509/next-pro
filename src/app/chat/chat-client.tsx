@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { MarkdownText } from "@/components/markdown-text";
 
@@ -8,9 +8,34 @@ type UIMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /** 数据库里的 id。翻页游标要用它 —— 上面那个 id 只是给 React 做 key 的 */
+  dbId?: number;
   /** 还在往这条消息上追加文字（决定要不要显示光标） */
   pending?: boolean;
 };
+
+/** 服务端首屏和分页接口给过来的消息形状 */
+type StoredMessage = {
+  id: number;
+  role: string;
+  content: string;
+};
+
+type ChatClientProps = {
+  initialMessages?: UIMessage[];
+  initialConversationId?: number | null;
+  initialHasMore?: boolean;
+  initialCursor?: number | null;
+};
+
+function toUIMessage(m: StoredMessage): UIMessage {
+  return {
+    id: `db-${m.id}`,
+    dbId: m.id,
+    role: m.role === "assistant" ? "assistant" : "user",
+    content: m.content,
+  };
+}
 
 type Meta = {
   model?: string;
@@ -53,24 +78,107 @@ const EXAMPLES = [
  * 自己拼字符串、自己 setState。React 只负责把拼好的字符串画出来，
  * 完全不知道「流式」这回事。
  */
-export function ChatClient() {
-  const [messages, setMessages] = useState<UIMessage[]>([]);
+export function ChatClient({
+  initialMessages,
+  initialConversationId = null,
+  initialHasMore = false,
+  initialCursor = null,
+}: ChatClientProps) {
+  const [messages, setMessages] = useState<UIMessage[]>(initialMessages ?? []);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<Meta>({});
-  const [conversationId, setConversationId] = useState<number | null>(null);
+  const [conversationId, setConversationId] = useState<number | null>(initialConversationId);
+
+  /** 还有没有更早的消息。每翻完一页由接口返回值决定 */
+  const [hasMore, setHasMore] = useState(initialHasMore);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   // 用户往上翻看历史时不要强行拽回底部
   const stickToBottom = useRef(true);
+  // 游标放 ref 不放 state：它只给下一次请求用，改了不需要重渲染
+  const cursorRef = useRef<number | null>(initialCursor);
+  // 防重入。滚动事件一秒能触发几十次，而 setLoadingMore 是异步的挡不住
+  const loadingMoreRef = useRef(false);
+  // 加载更早消息之前的「距底部距离」，插完消息靠它把滚动位置摆回去
+  const restoreRef = useRef<number | null>(null);
+  // 首屏内容撑不满容器时滚动事件永远不触发，用这个标记只补一次
+  const filledOnce = useRef(false);
 
-  useEffect(() => {
+  /** 往上翻一页。游标用 cursorRef 里那个「本页最老一条的 id」。 */
+  const loadMore = useCallback(async () => {
+    const cursor = cursorRef.current;
+    if (!hasMore || loadingMoreRef.current || conversationId === null || cursor === null) {
+      return;
+    }
+
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+
     const el = listRef.current;
-    if (!el || !stickToBottom.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [messages]);
+    // 插消息会让总高度变高。记下当前的「距底部距离」，
+    // 等 React 把新消息挂上去之后用它把视觉位置还原。
+    const distanceFromBottom = el ? el.scrollHeight - el.scrollTop : 0;
+
+    try {
+      const res = await fetch(
+        `/api/chat/history?conversationId=${conversationId}&before=${cursor}`,
+      );
+      if (!res.ok) {
+        // 401 / 404 都可能。别弹错误打断阅读，静默到底就行
+        setHasMore(false);
+        return;
+      }
+
+      const page = (await res.json()) as {
+        messages: StoredMessage[];
+        hasMore: boolean;
+        nextCursor: number | null;
+      };
+
+      if (page.messages.length === 0) {
+        setHasMore(false);
+        return;
+      }
+
+      restoreRef.current = distanceFromBottom;
+      setMessages((prev) => [...page.messages.map(toUIMessage), ...prev]);
+      setHasMore(page.hasMore);
+      cursorRef.current = page.nextCursor;
+    } catch {
+      // 网络断了。下次滚到顶会再试一次，不用惊动用户
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
+  }, [conversationId, hasMore]);
+
+  // 用 useLayoutEffect 而不是 useEffect：要在浏览器绘制之前就把滚动位置摆好，
+  // 否则会先看到列表跳到顶部、下一帧才归位，闪一下。
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+
+    if (restoreRef.current !== null) {
+      // 让「距底部的距离」保持不变：总高度涨了多少，scrollTop 就跟着涨多少，
+      // 视觉上就是内容没动、只是上面凭空多了几屏
+      el.scrollTop = el.scrollHeight - restoreRef.current;
+      restoreRef.current = null;
+      return;
+    }
+
+    if (stickToBottom.current) el.scrollTop = el.scrollHeight;
+
+    // 首屏一页没撑满容器时，滚动事件永远不会触发（没得滚），
+    // 用户就永远看不到更早的消息。这里主动补一页。
+    if (!filledOnce.current) {
+      filledOnce.current = true;
+      if (hasMore && el.scrollHeight <= el.clientHeight + 8) void loadMore();
+    }
+  }, [messages, hasMore, loadMore]);
 
   async function send(raw: string) {
     const content = raw.trim();
@@ -215,6 +323,8 @@ export function ChatClient() {
         onScroll={(e) => {
           const el = e.currentTarget;
           stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+          // 贴到顶就去要更早的一页。给 80px 余量，手指还没完全滑到底就开始加载
+          if (el.scrollTop < 80) void loadMore();
         }}
         className="max-h-[58vh] min-h-[38vh] space-y-4 overflow-y-auto rounded-xl border border-zinc-200 p-4 dark:border-zinc-800"
       >
@@ -237,7 +347,20 @@ export function ChatClient() {
             </div>
           </div>
         ) : (
-          messages.map((m) => <Bubble key={m.id} message={m} />)
+          <>
+            {/* 列表头上的状态条。三种状态都要说清楚，不然用户不知道
+                为什么往上滑没反应 */}
+            <div className="py-1 text-center font-mono text-[11px] text-zinc-400 dark:text-zinc-600">
+              {loadingMore
+                ? "正在加载更早的消息…"
+                : hasMore
+                  ? "往上滑加载更早的消息"
+                  : "已经到最早了"}
+            </div>
+            {messages.map((m) => (
+              <Bubble key={m.id} message={m} />
+            ))}
+          </>
         )}
       </div>
 

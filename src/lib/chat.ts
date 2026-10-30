@@ -20,8 +20,25 @@ const MAX_CONTEXT_CHARS = 24_000
  */
 const MAX_PER_DOC_CHARS = 12_000
 
-/** 往回带的历史条数。太多既费 token，也会把最早的废话一直拖着。 */
-const HISTORY_LIMIT = 20
+/**
+ * 往回带的历史最多占多少字。
+ *
+ * 第一版是按条数（20 条）裁的，这个指标不靠谱：一条 4000 字的粘贴消息
+ * 能顶三十条短消息，20 条的上限完全挡不住。按字数算才和真实的
+ * token 成本对得上。
+ */
+const MAX_HISTORY_CHARS = 12_000
+
+/**
+ * 一次最多扫多少条来凑预算。
+ *
+ * 纯粹是防御：正常对话到不了这个量，但万一某个会话被脚本灌了十万条，
+ * 也不能整表读进内存再裁。
+ */
+const HISTORY_SCAN_LIMIT = 200
+
+/** 历史页一次翻多少条。30 条大概两屏，再小翻得太勤。 */
+const PAGE_SIZE = 20
 
 export type DocumentContext = {
   text: string
@@ -149,20 +166,30 @@ export async function appendMessage(
 }
 
 /**
- * 取最近 N 条历史给上游。
+ * 拼给上游的历史。
  *
- * 必须倒序取再反转：正序 take 20 拿到的是最早那 20 条，
- * 长会话里模型会看着十天前的开场白回答刚问的问题。
+ * 从最新往回累加，到字数预算就停 —— 不是按条数，理由见 MAX_HISTORY_CHARS。
+ * 必须倒序取再反转：正序拿到的永远是最早那批，长会话里模型会看着
+ * 十天前的开场白回答刚问的问题。
  */
 export async function loadHistory(conversationId: number): Promise<ChatMessage[]> {
   const rows = await prisma.message.findMany({
     where: { conversationId },
     orderBy: { id: 'desc' },
-    take: HISTORY_LIMIT,
+    take: HISTORY_SCAN_LIMIT,
     select: { role: true, content: true },
   })
 
-  return rows.reverse().map((m) => ({
+  const picked: typeof rows = []
+  let used = 0
+  for (const row of rows) {
+    // 第一条无条件收下：那是用户刚问的这句，丢了就没得答
+    if (picked.length > 0 && used + row.content.length > MAX_HISTORY_CHARS) break
+    picked.push(row)
+    used += row.content.length
+  }
+
+  return picked.reverse().map((m) => ({
     role: m.role === 'assistant' ? 'assistant' : 'user',
     content: m.content,
   }))
@@ -181,17 +208,87 @@ export async function listConversations(ownerId: number) {
   })
 }
 
-export async function getConversationWithMessages(ownerId: number, id: number) {
-  return prisma.conversation.findFirst({
+/** 从库里读出来的一条消息。走 JSON 时 createdAt 会变成字符串，页面目前不用它。 */
+export type StoredMessage = {
+  id: number
+  role: string
+  content: string
+  createdAt: Date
+}
+
+export type MessagePage = {
+  messages: StoredMessage[]
+  hasMore: boolean
+  /** 下一页的游标：本页最老那条的 id。滚到顶时原样带回去。 */
+  nextCursor: number | null
+}
+
+/**
+ * 游标分页读消息。
+ *
+ * 为什么不用 offset：聊天记录一直在末尾追加，翻页的间隙来了新消息，
+ * 第 2 页就会和上一页重复。游标钉在「上一页最老那条的 id」上，
+ * 后面追加多少条都不影响已翻过的部分。
+ */
+async function fetchMessagePage(
+  conversationId: number,
+  beforeId: number | null,
+  limit: number,
+): Promise<MessagePage> {
+  const rows = await prisma.message.findMany({
+    where: {
+      conversationId,
+      ...(beforeId !== null ? { id: { lt: beforeId } } : {}),
+    },
+    orderBy: { id: 'desc' },
+    // 多取一条，只用来判断「还有没有更早的」，不返回给调用方
+    take: limit + 1,
+    select: { id: true, role: true, content: true, createdAt: true },
+  })
+
+  const hasMore = rows.length > limit
+  const slice = hasMore ? rows.slice(0, limit) : rows
+  // 游标必须在反转之前取：反转后 slice[0] 变成最老的那条了
+  const nextCursor = hasMore ? slice[slice.length - 1].id : null
+
+  return { messages: slice.reverse(), hasMore, nextCursor }
+}
+
+/** 滚动加载用：带归属校验，别人的会话一律当不存在。 */
+export async function getMessagePage(
+  ownerId: number,
+  conversationId: number,
+  beforeId: number | null,
+  limit = PAGE_SIZE,
+): Promise<MessagePage | null> {
+  const owned = await findOwnConversation(ownerId, conversationId)
+  if (!owned) return null
+  return fetchMessagePage(conversationId, beforeId, limit)
+}
+
+/** 首屏用：连会话本身（标题、真实总条数）一起给，省一次往返。 */
+export async function getConversationPage(ownerId: number, id: number, limit = PAGE_SIZE) {
+  const conversation = await prisma.conversation.findFirst({
     where: { id, ownerId },
     select: {
       id: true,
       title: true,
       createdAt: true,
-      messages: {
-        orderBy: { id: 'asc' },
-        select: { id: true, role: true, content: true, createdAt: true },
-      },
+      _count: { select: { messages: true } },
     },
   })
+  if (!conversation) return null
+
+  const page = await fetchMessagePage(id, null, limit)
+
+  return {
+    conversation: {
+      id: conversation.id,
+      title: conversation.title,
+      createdAt: conversation.createdAt,
+      // 分页只给了最近 30 条，页头要显示真实总数，所以单独 count
+      messageCount: conversation._count.messages,
+    },
+    ...page,
+  }
 }

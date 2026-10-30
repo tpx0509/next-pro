@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth";
-import { getConversationWithMessages } from "@/lib/chat";
-import { MarkdownText } from "@/components/markdown-text";
+import { getConversationPage } from "@/lib/chat";
+import { ChatClient } from "../chat-client";
 
 const timeFmt = new Intl.DateTimeFormat("sv-SE", {
   timeZone: "Asia/Shanghai",
@@ -17,11 +17,14 @@ const timeFmt = new Intl.DateTimeFormat("sv-SE", {
 export const instant = false;
 
 /**
- * 单个会话的历史记录 —— 纯服务端渲染。
+ * 单个会话 —— 可以接着聊，也可以往回翻。
  *
- * 这一页和对话页是两种完全不同的思路：这里是 RSC，一次请求把所有消息
- * 查出来拼成 HTML 发过去，没有流、没有客户端状态。因为历史记录不需要
- * 「边到边显示」，一次性给完反而更快。
+ * 以前这一页是纯 RSC 只读的，一次把所有消息查出来拼成 HTML。
+ * 现在改成「首屏给最近一页，剩下的滚到顶再要」：会话长了以后
+ * 一次性渲染几百条，光是 markdown 解析就够卡一会儿的。
+ *
+ * 首屏仍然服务端渲染 —— 打开页面就有内容，不用等客户端再发一次请求。
+ * 只有翻页走接口。所以聊天记录的 HTML 源码里还是能看到消息。
  */
 export default async function ConversationPage({ params }: PageProps<"/chat/[id]">) {
   const user = await requireUser("/conversations");
@@ -31,12 +34,20 @@ export default async function ConversationPage({ params }: PageProps<"/chat/[id]
   // 路径里的 id 可能是任何字符串，先挡掉 NaN，否则会给 Prisma 一个非法参数
   if (!Number.isInteger(conversationId)) notFound();
 
-  const conversation = await getConversationWithMessages(user.id, conversationId);
+  const page = await getConversationPage(user.id, conversationId);
   // 别人的会话和不存在一样处理 —— 不告诉外面「这个 id 存在但不是你的」
-  if (!conversation) notFound();
+  if (!page) notFound();
+
+  const initialMessages = page.messages.map((m) => ({
+    // React 的 key 要字符串，加 db- 前缀避免和客户端 uid() 生成的值撞上
+    id: `db-${m.id}`,
+    dbId: m.id,
+    role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
+    content: m.content,
+  }));
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <header className="space-y-2">
         <Link
           href="/conversations"
@@ -45,47 +56,21 @@ export default async function ConversationPage({ params }: PageProps<"/chat/[id]
           ← 全部会话
         </Link>
         <h1 className="text-2xl font-semibold tracking-tight">
-          {conversation.title ?? "未命名会话"}
+          {page.conversation.title ?? "未命名会话"}
         </h1>
         <p className="font-mono text-xs text-zinc-400 dark:text-zinc-500">
-          #{conversation.id} · {conversation.messages.length} 条消息 · 起于{" "}
-          {timeFmt.format(conversation.createdAt)}
+          {/* 这里显示数据库里的真实总条数，不是首屏拿到的那一页 */}
+          #{page.conversation.id} · {page.conversation.messageCount} 条消息 · 起于{" "}
+          {timeFmt.format(page.conversation.createdAt)}
         </p>
       </header>
 
-      <ol className="space-y-4">
-        {conversation.messages.map((m) => (
-          <li key={m.id} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
-            <div
-              className={
-                m.role === "user"
-                  ? "max-w-[85%] rounded-2xl rounded-br-sm bg-zinc-900 px-4 py-2.5 text-sm leading-6 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                  : "max-w-[90%] rounded-2xl rounded-bl-sm bg-zinc-100 px-4 py-2.5 text-sm leading-6 text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
-              }
-            >
-              <div className="break-words">
-                <MarkdownText>{m.content}</MarkdownText>
-              </div>
-              <p
-                className={
-                  m.role === "user"
-                    ? "mt-1.5 font-mono text-[10px] text-zinc-400 dark:text-zinc-500"
-                    : "mt-1.5 font-mono text-[10px] text-zinc-400 dark:text-zinc-500"
-                }
-              >
-                {m.role === "user" ? "你" : "助手"} · {timeFmt.format(m.createdAt)}
-              </p>
-            </div>
-          </li>
-        ))}
-      </ol>
-
-      <Link
-        href="/chat"
-        className="inline-flex rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-      >
-        开个新会话
-      </Link>
+      <ChatClient
+        initialMessages={initialMessages}
+        initialConversationId={page.conversation.id}
+        initialHasMore={page.hasMore}
+        initialCursor={page.nextCursor}
+      />
     </div>
   );
 }
