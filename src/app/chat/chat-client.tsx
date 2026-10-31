@@ -146,6 +146,28 @@ export function ChatClient({
   const filledOnce = useRef(false);
   // 轮询循环是不是已经在跑了。和 loadingMoreRef 同一个理由：state 挡不住重入
   const pollingRef = useRef(false);
+  // 地址栏已经换成 /chat/{id} 的那个 id。meta 帧和 done 帧都会带 conversationId，只换一次
+  const syncedCidRef = useRef<number | null>(null);
+
+  /**
+   * 拿到 conversation id 之后把地址栏换成 /chat/{id}。
+   *
+   * 为什么非换不可：`/chat` 首页每次进来都是「空白新会话」。停在这个地址上刷新，
+   * 服务端不知道你要看哪条对话，正在生成的那条回答就再也找不回来了。
+   * 换成 `/chat/{id}` 之后刷新，页面会按会话把历史读回来（连 status="streaming" 一起），
+   * 由轮询接着往下画。
+   *
+   * 用 replaceState 不用 pushState：后退应该回到进入对话之前那一页（多半是历史会话列表），
+   * 而不是退到一个空白的 /chat。也不用 router.replace —— 那会重跑一遍 RSC、把整页重置一次，
+   * 白费一次请求，还可能打断正在读的流。
+   */
+  const syncUrl = useCallback((cid: number) => {
+    if (syncedCidRef.current === cid) return;
+    syncedCidRef.current = cid;
+    const target = `/chat/${cid}`;
+    if (window.location.pathname === target) return;
+    window.history.replaceState(null, "", target);
+  }, []);
 
   /** 往上翻一页。游标用 cursorRef 里那个「本页最老一条的 id」。 */
   const loadMore = useCallback(async () => {
@@ -351,6 +373,7 @@ export function ChatClient({
           });
           if (typeof payload.conversationId === "number") {
             setConversationId(payload.conversationId);
+            syncUrl(payload.conversationId);
           }
           // 服务端在开流之前就把空回答建好了，把它的库 id 记到气泡上。
           // 轮询、继续写都要靠它找到「是哪一条」。
@@ -364,6 +387,7 @@ export function ChatClient({
         } else if (event === "done") {
           if (typeof payload.conversationId === "number") {
             setConversationId(payload.conversationId);
+            syncUrl(payload.conversationId);
           }
           const wasStopped = payload.stopped === true;
           setMessages((prev) =>
