@@ -54,7 +54,6 @@ async function* ssePayloads(body: ReadableStream<Uint8Array>): AsyncGenerator<st
       
       // stream: true —— 告诉解码器「后面还有」，别把半个多字节字符当坏数据丢掉
       buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, '\n')
-      console.log('[llm] buffer',buffer)
       let cut = buffer.indexOf('\n\n')
       while (cut !== -1) {
         const frame = buffer.slice(0, cut)

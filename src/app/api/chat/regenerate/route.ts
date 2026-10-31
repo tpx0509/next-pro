@@ -4,6 +4,7 @@ import { CHAT_MODEL, llmConfigError } from '@/lib/llm'
 import {
   buildDocumentContext,
   buildSystemPrompt,
+  CONTINUE_RULES,
   findOwnConversation,
   getLastAssistantMessage,
   loadHistory,
@@ -78,7 +79,12 @@ export async function POST(request: NextRequest) {
   ])
 
   const messages = [
-    { role: 'system' as const, content: buildSystemPrompt(ctx) },
+    // continue 时多一段续写规则。光靠「messages 以 assistant 结尾」这个暗示不够用 ——
+    // 模型会当成「重写这条回答」，从头再列一遍，接缝处还会漏出用户的问题原文。
+    {
+      role: 'system' as const,
+      content: buildSystemPrompt(ctx) + (mode === 'continue' ? CONTINUE_RULES : ''),
+    },
     ...history,
     // 只给 continue 补这一条：让模型知道「我说到这儿了」，它就会往下接
     ...(mode === 'continue'
