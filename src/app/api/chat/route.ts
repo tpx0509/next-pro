@@ -1,30 +1,25 @@
 import type { NextRequest } from 'next/server'
 import { getCurrentUser } from '@/lib/auth'
-import { CHAT_MODEL, llmConfigError, streamCompletion, type ChatMessage } from '@/lib/llm'
+import { CHAT_MODEL, llmConfigError } from '@/lib/llm'
 import {
   appendMessage,
   buildDocumentContext,
   buildSystemPrompt,
+  createAssistantMessage,
   createConversation,
   findOwnConversation,
   loadHistory,
 } from '@/lib/chat'
+import { createAnswerStream, SSE_HEADERS } from '@/lib/stream-answer'
+import { parseId } from '@/lib/ids'
 
-// 这是整个项目里唯一一个「响应体是流」的接口。
+// 这个路由负责「接一句话，把它变成一次生成」。
+// 生成过程本身（调模型、往外推、往库存）在 lib/stream-answer.ts，
+// 重新生成接口也走同一份实现，别在这儿再写一遍。
 //
 // 为什么不能用 Server Action：Action 的返回值必须是可序列化的值（要拼进 RSC
 // payload 回给 React 渲染），ReadableStream 传不进去。而且 Action 的响应是
 // 一次性生成的，没法「先发一部分、等会儿再发一部分」。
-//
-// 这条链路和 RSC 完全无关：浏览器 fetch 拿到的是原始 HTTP 流，
-// 里面装的是我们自己定义的 SSE 文本帧，React 不参与解析。
-
-const encoder = new TextEncoder()
-
-/** SSE 的一帧：event 名字 + 一行 JSON + 一个空行结尾。 */
-function frame(event: string, data: unknown): Uint8Array {
-  return encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-}
 
 export async function POST(request: NextRequest) {
   // ------- 下面这一整段都发生在「响应还没开始」之前 -------
@@ -50,8 +45,9 @@ export async function POST(request: NextRequest) {
   // 会话：带了 id 就必须属于当前用户（id 是自增的，猜中就能读别人的对话）
   let conversationId: number
   if (body.conversationId != null) {
-    const id = Number(body.conversationId)
-    const own = Number.isInteger(id) ? await findOwnConversation(user.id, id) : null
+    const id = parseId(body.conversationId)
+    if (id === null) return Response.json({ error: 'conversationId 不合法' }, { status: 400 })
+    const own = await findOwnConversation(user.id, id)
     if (!own) return Response.json({ error: '会话不存在' }, { status: 404 })
     conversationId = own.id
   } else {
@@ -68,96 +64,28 @@ export async function POST(request: NextRequest) {
   ])
 
   // history 里已经包含刚存进去的这条 user 消息，不要再 push 一次
-  const messages: ChatMessage[] = [
-    { role: 'system', content: buildSystemPrompt(ctx) },
+  const messages = [
+    { role: 'system' as const, content: buildSystemPrompt(ctx) },
     ...history,
   ]
 
-  // 客户端断开 / 点停止 → request.signal abort → 转发给上游 fetch。
-  // 不转发的话模型会继续把整段算完，token 白扣。
-  const abort = new AbortController()
-  request.signal.addEventListener('abort', () => abort.abort())
+  // 先把空回答建出来，再开始生成。这个顺序是「刷新能看到进度」的前提：
+  // 生成过程中每隔几百毫秒往这条消息里 UPDATE，前端随时能读到最新长度。
+  const assistantId = await createAssistantMessage(conversationId)
 
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      let answer = ''
-      let usage: { promptTokens: number; completionTokens: number } | null = null
-
-      try {
-        // 第一轮对话时前端还不知道会话 id，先发一条 meta。
-        // 顺带把「这次参考了哪几篇文档」告诉它，页面上能显示来源。
-        controller.enqueue(
-          frame('meta', {
-            conversationId,
-            model: CHAT_MODEL,
-            sources: ctx.titles,
-            truncated: ctx.truncated,
-            truncatedTitles: ctx.truncatedTitles,
-          }),
-        )
-
-        for await (const ev of streamCompletion(messages, { signal: abort.signal })) {
-          if (ev.type === 'delta') {
-            answer += ev.text
-            controller.enqueue(frame('delta', { text: ev.text }))
-          } else {
-            usage = ev
-          }
-        }
-      } catch (e) {
-        const message = abort.signal.aborted
-          ? '已停止生成'
-          : e instanceof Error
-            ? e.message
-            : '生成失败'
-        try {
-          controller.enqueue(frame('error', { message }))
-        } catch {
-          // 客户端已经走了，发不出去很正常，不用管
-        }
-      } finally {
-        // 不管是正常结束、上游报错，还是用户中途关掉页面，只要吐过字就落库。
-        // 注意这一步不依赖 controller 还能用：断开之后 enqueue 会抛
-        // TypeError，但写数据库不受影响 —— 两者是两条独立的信道。
-        let messageId: number | null = null
-        if (answer.trim()) {
-          try {
-            const saved = await appendMessage(conversationId, 'assistant', answer)
-            messageId = saved.id
-          } catch (e) {
-            console.error('[chat] 回答落库失败', e)
-          }
-        }
-
-        try {
-          controller.enqueue(
-            frame('done', {
-              conversationId,
-              messageId,
-              usage,
-              stopped: abort.signal.aborted,
-            }),
-          )
-          controller.close()
-        } catch {
-          // 同上
-        }
-      }
-    },
-    cancel() {
-      // 前端 reader.cancel() 会走到这里
-      abort.abort()
+  const stream = createAnswerStream({
+    conversationId,
+    assistantId,
+    messages,
+    meta: {
+      conversationId,
+      messageId: assistantId,
+      model: CHAT_MODEL,
+      sources: ctx.titles,
+      truncated: ctx.truncated,
+      truncatedTitles: ctx.truncatedTitles,
     },
   })
 
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      // no-store：别缓存
-      // no-transform：别让中间层压缩或重新分包，那会把逐字效果毁掉
-      'Cache-Control': 'no-store, no-transform',
-      // nginx 默认攒够一块再发，这个头让它立刻往外出
-      'X-Accel-Buffering': 'no',
-    },
-  })
+  return new Response(stream, { headers: SSE_HEADERS })
 }

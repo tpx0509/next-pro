@@ -109,10 +109,22 @@ model Message {
   role    String
   content String
 
+  /// 这条回答写到哪一步了。只有 assistant 消息会停在 streaming。
+  ///
+  /// 默认 done 而不是 streaming，是有意的：默认值要服务于「绝大多数行」。
+  /// 库里已有的消息全是写完的，加这个字段时不用回填任何东西；
+  /// 只有正在生成的那一条会在创建时显式写成 streaming。
+  ///
+  /// streaming → 生成中（服务端还在往里写，前端刷新后可以接着看）
+  /// done      → 正常写完，或者用户主动点停止（已有的字都是有效的）
+  /// failed    → 出错了（上游 500、超时、进程被杀留下的僵尸）
+  status String @default("done")
+
   conversationId Int
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
-  @@index([conversationId])
+  /// 翻页、取历史都按 (conversationId, id) 走，复合索引一次覆盖。
+  @@index([conversationId, id])
 }

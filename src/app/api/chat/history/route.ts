@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server'
 import { getCurrentUser } from '@/lib/auth'
 import { getMessagePage } from '@/lib/chat'
+import { parseId } from '@/lib/ids'
 
 // 历史消息翻页。跟 /api/chat 一样是 Route Handler，但它不返回流 ——
 // 一次给一页 JSON，前端拿到就 setState 拼到列表头上。
@@ -14,8 +15,8 @@ export async function GET(request: NextRequest) {
 
   const params = request.nextUrl.searchParams
 
-  const conversationId = Number(params.get('conversationId'))
-  if (!Number.isInteger(conversationId)) {
+  const conversationId = parseId(params.get('conversationId'))
+  if (conversationId === null) {
     return Response.json({ error: 'conversationId 不合法' }, { status: 400 })
   }
 

@@ -1,5 +1,6 @@
 import 'server-only'
 import { prisma } from './prisma'
+import { isRunning } from './running'
 import type { ChatMessage } from './llm'
 
 /**
@@ -166,15 +167,143 @@ export async function appendMessage(
 }
 
 /**
+ * 一条 assistant 回答写到哪一步。和 schema 里 Message.status 的注释对应。
+ *
+ * streaming → 服务端还在往里写，刷新页面能接着看
+ * done      → 正常写完，或用户主动停止（已有的字都算数）
+ * failed    → 上游报错、超时，或者进程被杀留下的僵尸
+ */
+export type MessageStatus = 'streaming' | 'done' | 'failed'
+
+/**
+ * 先建一条空回答，再慢慢往里灌。
+ *
+ * 顺序和以前反过来了：以前是「生成完 → create」，一次 INSERT 搞定；
+ * 现在是「create 空壳 → 边生成边 UPDATE」。只有这样才能做到刷新页面
+ * 看到进度，也顺便让「生成到一半崩了」在库里留下痕迹，
+ * 而不是整条回答凭空消失、用户以为自己的问题没发出去。
+ */
+export async function createAssistantMessage(conversationId: number): Promise<number> {
+  const msg = await prisma.message.create({
+    data: { conversationId, role: 'assistant', content: '', status: 'streaming' },
+    select: { id: true },
+  })
+  return msg.id
+}
+
+/**
+ * 生成途中把已写的内容落库。
+ *
+ * 失败不抛异常：SQLite 同一时刻只能有一个写事务，正好赶上别人在写就是
+ * SQLITE_BUSY。丢这一次并不要紧 —— 下一次更新会带着更长的内容覆盖上来，
+ * 最后 finishMessage 还会再兜一次底。为了一次中途落库失败把整条回答废掉
+ * 才是真的亏。
+ */
+export async function updateMessageContent(id: number, content: string): Promise<void> {
+  try {
+    await prisma.message.update({
+      where: { id },
+      data: { content },
+      select: { id: true },
+    })
+  } catch (e) {
+    console.error('[chat] 中途落库失败（下一次会覆盖，不影响结果）', e)
+  }
+}
+
+/** 收尾：内容和最终状态一起定下来。这个失败了才真的算事故，让它抛。 */
+export async function finishMessage(
+  id: number,
+  content: string,
+  status: Exclude<MessageStatus, 'streaming'>,
+): Promise<void> {
+  await prisma.message.update({
+    where: { id },
+    data: { content, status },
+    select: { id: true },
+  })
+}
+
+/** 会话里最后一条 assistant 消息。重试和继续写都从它身上取。 */
+export async function getLastAssistantMessage(conversationId: number) {
+  return prisma.message.findFirst({
+    where: { conversationId, role: 'assistant' },
+    orderBy: { id: 'desc' },
+    select: { id: true, content: true, status: true },
+  })
+}
+
+/**
+ * 重试前把旧回答清空、重新标成 streaming。
+ *
+ * 为什么不删掉重建：删了 id 就变了，前端那条气泡得整个换一个 key 重新挂载，
+ * 滚动位置会跳。看起来是同一句回答在重写，那就该是同一条记录。
+ */
+export async function restartMessage(id: number): Promise<void> {
+  await prisma.message.update({
+    where: { id },
+    data: { content: '', status: 'streaming' },
+    select: { id: true },
+  })
+}
+
+/** 僵尸判定的宽限期：消息刚建出来那几秒，可能还没走完 register，别急着判死。 */
+const ZOMBIE_GRACE_MS = 30_000
+
+/**
+ * 轮询用：会话最后一条消息现在长什么样、写到哪了。
+ *
+ * 顺手做一件重要的事 —— 僵尸清理。库里写着 streaming 但内存里根本没有
+ * 对应的生成任务，只有一种可能：进程重启过，那次生成早就没了。
+ * 不处理的话前端会永远轮询下去，页面上永远显示「正在生成」。
+ *
+ * 这和 Session 过期是同一个思路：没有定时任务，就在读的时候顺手收拾。
+ */
+export async function getLastMessageState(conversationId: number) {
+  const msg = await prisma.message.findFirst({
+    where: { conversationId },
+    orderBy: { id: 'desc' },
+    select: { id: true, role: true, content: true, status: true, createdAt: true },
+  })
+  if (!msg) return null
+
+  const looksDead =
+    msg.status === 'streaming' &&
+    !isRunning(conversationId) &&
+    Date.now() - msg.createdAt.getTime() > ZOMBIE_GRACE_MS
+
+  if (looksDead) {
+    await prisma.message
+      .update({ where: { id: msg.id }, data: { status: 'failed' }, select: { id: true } })
+      .catch(() => {})
+    return { ...msg, status: 'failed' }
+  }
+
+  return msg
+}
+
+/**
  * 拼给上游的历史。
  *
  * 从最新往回累加，到字数预算就停 —— 不是按条数，理由见 MAX_HISTORY_CHARS。
  * 必须倒序取再反转：正序拿到的永远是最早那批，长会话里模型会看着
  * 十天前的开场白回答刚问的问题。
+ *
+ * excludeId：重新生成时要把「正在被重写的那条回答」摘出去，
+ * 否则模型会看到历史末尾挂着一个空的 assistant，以为自己上一句什么都没说。
  */
-export async function loadHistory(conversationId: number): Promise<ChatMessage[]> {
+export async function loadHistory(
+  conversationId: number,
+  excludeId?: number,
+): Promise<ChatMessage[]> {
   const rows = await prisma.message.findMany({
-    where: { conversationId },
+    where: {
+      conversationId,
+      // 还没写完的回答不算历史。半截话和空壳都会带偏模型，
+      // 让它在别人没说完的地方接着编。
+      status: { not: 'streaming' },
+      ...(excludeId === undefined ? {} : { id: { not: excludeId } }),
+    },
     orderBy: { id: 'desc' },
     take: HISTORY_SCAN_LIMIT,
     select: { role: true, content: true },
@@ -213,6 +342,8 @@ export type StoredMessage = {
   id: number
   role: string
   content: string
+  /** 前端要靠它判断「这条还在生成」，进而决定要不要接上轮询 */
+  status: string
   createdAt: Date
 }
 
@@ -243,7 +374,7 @@ async function fetchMessagePage(
     orderBy: { id: 'desc' },
     // 多取一条，只用来判断「还有没有更早的」，不返回给调用方
     take: limit + 1,
-    select: { id: true, role: true, content: true, createdAt: true },
+    select: { id: true, role: true, content: true, status: true, createdAt: true },
   })
 
   const hasMore = rows.length > limit
