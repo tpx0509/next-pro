@@ -38,13 +38,23 @@ export default async function ConversationPage({ params }: PageProps<"/chat/[id]
   // 别人的会话和不存在一样处理 —— 不告诉外面「这个 id 存在但不是你的」
   if (!page) notFound();
 
-  const initialMessages = page.messages.map((m) => ({
-    // React 的 key 要字符串，加 db- 前缀避免和客户端 uid() 生成的值撞上
-    id: `db-${m.id}`,
-    dbId: m.id,
-    role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
-    content: m.content,
-  }));
+  // status 必须带上。刷新那一刻如果服务端还在生成，库里的 status 是 streaming，
+  // 客户端靠它决定「要不要接上轮询」。以前这里只传了 id/role/content，
+  // 结果就是：库里明明写着 streaming，前端拿到的却是 undefined，
+  // 启动条件永远不成立，页面停在刷新时那半截再也不动。
+  const initialMessages = page.messages.map((m) => {
+    const status: "streaming" | "done" | "failed" =
+      m.status === "streaming" || m.status === "failed" ? m.status : "done";
+    return {
+      // React 的 key 要字符串，加 db- 前缀避免和客户端 uid() 生成的值撞上
+      id: `db-${m.id}`,
+      dbId: m.id,
+      role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
+      content: m.content,
+      status,
+      pending: status === "streaming",
+    };
+  });
 
   return (
     <div className="space-y-4">
